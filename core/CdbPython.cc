@@ -15,7 +15,8 @@
 #include "DataCell.hh"
 #endif
 
-// #define DEBUG
+// #define DEBUG __FILE__
+#include "Debug.hh"
 
 std::string cadabra::escape_quotes(const std::string& line)
 	{
@@ -243,6 +244,9 @@ int cadabra::is_python_code_complete(const std::string& code, std::string& error
 	catch (pybind11::error_already_set& e) {
 //		std::cerr << "EXCEPTION: " << e.what() << std::endl;
 		error=e.what();
+		// if (std::string(e.what()).find("multiple statements found while compiling a single") != std::string::npos) {
+		// 	return 0;
+		// 	}
 		if (std::string(e.what()).find("unexpected EOF") != std::string::npos) {
 			return -1;
 			}
@@ -250,6 +254,7 @@ int cadabra::is_python_code_complete(const std::string& code, std::string& error
 			return -1;
 			}
 		if (std::string(e.what()).find("SyntaxError") != std::string::npos) {
+			// std::cerr << e.what() << std::endl;
 			return -2;
 			}
 		
@@ -259,9 +264,9 @@ int cadabra::is_python_code_complete(const std::string& code, std::string& error
 
 std::string cadabra::remove_variable_assignments(const std::string& code, const std::string& variable)
 	{
-//	pybind11::scoped_interpreter guard{};	
+//	pybind11::scoped_interpreter guard{};
 
-	static std::string removal_code = R"PYTHON(
+static std::string removal_code = R"PYTHON(
 import ast
 
 class AssignmentRemover(ast.NodeTransformer):
@@ -285,11 +290,19 @@ class AssignmentRemover(ast.NodeTransformer):
         return node
 
 def remove_assignments(code: str, var_name: str) -> str:
+    try:
+        # Python 3.9+
+        unparse = ast.unparse
+    except AttributeError:
+        # Python < 3.9
+        import astunparse
+        unparse = astunparse.unparse
+
     tree = ast.parse(code)
     transformer = AssignmentRemover(var_name)
     modified_tree = transformer.visit(tree)
     ast.fix_missing_locations(modified_tree)
-    return ast.unparse(modified_tree)
+    return unparse(modified_tree)
 )PYTHON";
 
 	
@@ -449,42 +462,28 @@ std::string replace_dollar_expressions(const std::string& input,
 	std::ostringstream result;
 	bool in_single_quote = false;
 	bool in_double_quote = false;
-	bool in_bracket = false;
-	bool in_dollar = false;
 	size_t dollar_start = std::string::npos;
 	
 	for (size_t i = 0; i < input.length(); ++i) {
 		char c = input[i];
       
 		// Toggle quote state
-		if (c == '{') {
-			in_bracket = true;
-			if (!in_dollar)
-				result << c;
-        }
-		else if (c == '}') {
-			in_bracket = false;
-			if (!in_dollar)
-				result << c;
-        }
-		else if (c == '"' && !in_single_quote && !in_bracket) {
+		if (c == '"' && !in_single_quote && dollar_start == std::string::npos) {
 			in_double_quote = !in_double_quote;
 			result << c;
         }
-		else if (c == '\'' && !in_double_quote && !in_bracket) {
+		else if (c == '\'' && !in_double_quote && dollar_start == std::string::npos) {
 			in_single_quote = !in_single_quote;
 			result << c;
 			}
 		// Handle dollar signs outside of quotes
 		else if (c == '$' && !in_single_quote && !in_double_quote) {
 			if (dollar_start == std::string::npos) {
-				in_dollar = true;
 				// First dollar sign
 				dollar_start = i;
 				// Don't append the $ yet, wait until we find the matching one
             }
 			else {
-				in_dollar = false;
 				// Second dollar sign, found a match
 				std::string content = input.substr(dollar_start + 1, i - dollar_start - 1);
 				result << replacer(content);
@@ -499,7 +498,6 @@ std::string replace_dollar_expressions(const std::string& input,
             }
 			// If we're between $...$, don't add anything yet
 			}
-
 		}
 	
 	// Handle unclosed dollar
@@ -544,12 +542,10 @@ std::pair<std::string, std::string> cadabra::convert_line(const std::string& lin
 	// Bare ';' gets replaced with 'display(_)' but *only* if we have no
 	// preceding lines which have not finished parsing.
 	if(line_stripped==";" && lhs=="") {
-		if(display){
+		if(display)
 			return std::make_pair(prefix, indent_line+"display(_)");
-		}
-		else{
+		else
 			return std::make_pair(prefix, indent_line);
-		}
 		}
 
 	// 'lastchar' is either a Cadabra termination character, or empty.
@@ -599,6 +595,7 @@ std::pair<std::string, std::string> cadabra::convert_line(const std::string& lin
 		};
     
 	line_stripped = replace_dollar_expressions(line_stripped, replacement);
+	DEBUGLN( std::cerr << "line_stripped = " << line_stripped << std::endl; );
 	
 // 	std::regex dollarmatch(R"(\$([^\$]*)\$)");
 // 	line_stripped = std::regex_replace(line_stripped, dollarmatch, "Ex(r'''$1''', False)", std::regex_constants::match_default | std::regex_constants::format_default );
